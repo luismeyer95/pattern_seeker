@@ -1,9 +1,16 @@
-export type Info = {
-    name: string;
-    age: number;
-};
-
-export const me: Info = {
-    name: 'Luis',
-    age: 26
+import {
+    PatternSeeker,
+    Stage,
+    StageEvaluator,
+    StageActions,
+    PatternDescriptor,
+    evaluatorFromPredicate
+} from 'src/PatternSeeker';
+export {
+    PatternSeeker,
+    Stage,
+    StageEvaluator,
+    StageActions,
+    PatternDescriptor,
+    evaluatorFromPredicate
 };

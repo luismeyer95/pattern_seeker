@@ -7,7 +7,7 @@
         {
             "type": "pwa-node",
             "request": "launch",
-            "runtimeExecutable": "/Users/luismeyer/.nvm/versions/node/v16.5.0/bin/node",
+            "runtimeExecutable": "node",
             "runtimeArgs": [
                 "--nolazy",
                 "-r",
@@ -29,7 +29,8 @@
             "skipFiles": ["<node_internals>/**", "node_modules/**"],
             "autoAttachChildProcesses": true,
             "outputCapture": "std",
-            "console": "integratedTerminal"
+            "console": "internalConsole",
+            "internalConsoleOptions": "openOnSessionStart"
         }
         // {
         //     "name": "Attach to Process",
