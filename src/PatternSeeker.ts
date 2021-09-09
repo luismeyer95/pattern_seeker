@@ -74,7 +74,7 @@ export class PatternSeeker<T, G> extends EventEmitter {
 
     private startingState(): ExecutionState<T, G> {
         return {
-            id: shortId.generate(),
+            id: shortId.generate().slice(0, 5),
             currentStage: 0,
             nextMove: Change.NONE,
             data: this.pattern.initialStateData,
