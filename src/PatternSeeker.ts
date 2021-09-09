@@ -2,7 +2,7 @@ import { EventEmitter } from 'events';
 import { pipeWith } from 'pipe-ts';
 import * as shortId from 'short-uuid';
 
-type Item<T> = {
+export type Item<T> = {
     index: number;
     value: T;
 };
@@ -12,7 +12,7 @@ export type StageEvaluator<T, G = any> = (
     actions: StageActions<T, G>
 ) => unknown;
 
-export type StageActions<T, G> = {
+export type StageActions<T, G = any> = {
     progress: () => void;
     set: (mutator: (old?: G) => G | undefined) => void;
     get: () => G | undefined;
@@ -20,7 +20,7 @@ export type StageActions<T, G> = {
     break: () => void;
 };
 
-export type Stage<T, G> = {
+export type Stage<T, G = any> = {
     evaluator: StageEvaluator<T, G>;
     breakCounter?: number;
 };
@@ -28,7 +28,7 @@ export type Stage<T, G> = {
 export type PatternDescriptor<T, G = any> = {
     stages: Stage<T, G>[];
     initialStateData?: G;
-    lookbackSize: number;
+    lookbackBufferSize: number;
 };
 
 export enum Change {
@@ -41,7 +41,7 @@ export type StageCompletion<T> = Item<T> & {
     stage: number;
 };
 
-export type ExecutionState<T, G> = {
+export type ExecutionState<T, G = any> = {
     id: string;
     data?: G;
     nextMove: Change;
@@ -50,9 +50,10 @@ export type ExecutionState<T, G> = {
     backtrace: StageCompletion<T>[];
 };
 
-export type StageEvents = `${number}:${'break' | 'stagnate' | 'complete'}`;
+export type StageEventNames = 'break' | 'stagnate' | 'complete';
+export type StageEvents = `${number}:${StageEventNames}` | 'complete';
 
-export type StageEventReport<T, G> = Pick<
+export type StageEventReport<T, G = any> = Pick<
     ExecutionState<T, G>,
     'id' | 'data' | 'backtrace'
 >;
@@ -66,7 +67,7 @@ export class PatternSeeker<T, G> extends EventEmitter {
 
     constructor(pattern: PatternDescriptor<T, G>) {
         super();
-        if (pattern.lookbackSize < 0)
+        if (pattern.lookbackBufferSize < 0)
             throw new Error('lookbackBuffer should be > 0');
         this.pattern = pattern;
     }
@@ -96,7 +97,7 @@ export class PatternSeeker<T, G> extends EventEmitter {
 
     private updateLookback(element: T) {
         this.lookbackBuffer.push({ index: this.curIndex, value: element });
-        if (this.lookbackBuffer.length > this.pattern.lookbackSize)
+        if (this.lookbackBuffer.length > this.pattern.lookbackBufferSize)
             this.lookbackBuffer.shift();
     }
 
@@ -120,7 +121,7 @@ export class PatternSeeker<T, G> extends EventEmitter {
         return {
             id,
             data,
-            backtrace
+            backtrace: [...backtrace]
         };
     }
 
@@ -140,8 +141,12 @@ export class PatternSeeker<T, G> extends EventEmitter {
     ) => {
         return states.filter((execState) => {
             if (this.completePredicate(execState)) {
+                const completion = this.generateStageCompletion(execState);
+                execState.backtrace.push(completion);
                 const report = this.generateReport(execState);
                 this.emit(`${execState.currentStage}:complete`, report);
+                if (execState.currentStage === this.pattern.stages.length - 1)
+                    this.emit(`complete`, report);
                 return false;
             }
             return true;
@@ -156,19 +161,32 @@ export class PatternSeeker<T, G> extends EventEmitter {
         });
     };
 
+    private resetNextChange(state: ExecutionState<T, G>) {
+        return { ...state, nextMove: Change.NONE };
+    }
+
     private progressState(
         execState: ExecutionState<T, G>
     ): ExecutionState<T, G> {
+        const completion = this.generateStageCompletion(execState);
+        execState.backtrace.push(completion);
+        execState.currentStage++;
+        execState.breakCounter =
+            this.pattern.stages[execState.currentStage].breakCounter ?? -1;
+        const report = this.generateReport(execState);
+        this.emit(`${execState.currentStage - 1}:complete`, report);
+        return execState;
+    }
+
+    private generateStageCompletion(
+        execState: ExecutionState<T, G>
+    ): StageCompletion<T> {
         const lastItem = this.lookbackBuffer[this.lookbackBuffer.length - 1];
         const backtraceElement: StageCompletion<T> = {
             stage: execState.currentStage,
             ...lastItem
         };
-        execState.backtrace.push(backtraceElement);
-        execState.currentStage++;
-        execState.breakCounter =
-            this.pattern.stages[execState.currentStage].breakCounter ?? -1;
-        return execState;
+        return backtraceElement;
     }
 
     private stagnateState(
@@ -194,27 +212,34 @@ export class PatternSeeker<T, G> extends EventEmitter {
     process(element: T): void {
         if (!this.states.find((st) => st.currentStage === 0))
             this.states.push(this.startingState());
+        this.states = this.states.map((st) => this.resetNextChange(st));
         this.states.forEach((execState) => {
             const stage = this.pattern.stages[execState.currentStage];
             const actions = this.generateActions(execState);
             const item: Item<T> = { index: this.curIndex, value: element };
             stage.evaluator(item, actions);
         });
+        // do not move next line around
         this.updateLookback(element);
         this.states = this.processStates(this.states);
         this.curIndex++;
     }
 
     on(event: StageEvents, fn: (report: StageEventReport<T, G>) => any): this {
+        const nb = parseInt(event, 10);
+        if (nb < 0 || nb >= this.pattern.stages.length)
+            throw new Error('invalid stage number');
         super.on(event, fn);
         return this;
     }
 }
 
-export const evaluatorFromPredicate = <F extends (el: any) => boolean>(
-    pred: F
-): StageEvaluator<Parameters<F>[0], any> => {
-    return (element, { progress }) => {
-        pred(element) && progress();
+export const basicEvaluator = <T, G = any>(
+    pred: (el: T, i: number, previous?: T) => boolean
+): StageEvaluator<T, G> => {
+    return ({ index, value }, { progress, lookback }) => {
+        const buffer = lookback();
+        const prev = buffer[buffer.length - 1];
+        pred(value, index, prev?.value) && progress();
     };
 };
