@@ -25,26 +25,18 @@ const isDecr = basicEvaluator(
     (el: number, i, prev) => !!prev && prev - 1 === el
 );
 
-const patternSeek = new PatternSeeker({
+const patternSeek = new PatternSeeker<number>({
     stages: [
-        { evaluator: equals(10) },
-        { evaluator: isIncr, breakCounter: 3 },
-        { evaluator: isIncr, breakCounter: 3 }
+        {
+            evaluator: (item, actions) => {
+                console.log(actions.indicators());
+            }
+        }
     ],
-    lookbackBufferSize: 10
+    lookbackBufferSize: 10,
+    indicators: {
+        ma20: (item, lookback) => number
+    }
 });
-const dataset = [5, 6, 10, 11, 12, 3, 4, 5];
 
-const expectedFinalReport = [
-    { stage: 0, index: 2, value: 10 },
-    { stage: 1, index: 3, value: 11 },
-    { stage: 2, index: 4, value: 12 }
-];
-
-for (let i = 0; i < 3; ++i) {
-    patternSeek.on(`${i}:complete`, (report) => {
-        console.log(`${i}.\n`, report);
-    });
-}
-
-dataset.forEach((el) => patternSeek.process(el));
+patternSeek.process();

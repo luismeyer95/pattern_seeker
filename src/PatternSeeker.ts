@@ -7,55 +7,66 @@ export type Item<T> = {
     value: T;
 };
 
-export type StageEvaluator<T, G = any> = (
+export type StageEvaluator<T, IndTup, G = any> = (
     element: Item<T>,
-    actions: StageActions<T, G>
+    actions: StageActions<T, IndTup, G>
 ) => unknown;
 
-export type StageActions<T, G = any> = {
+export type StageActions<T, IndTup, G = any> = {
     progress: () => void;
     set: (mutator: (old?: G) => G | undefined) => void;
     get: () => G | undefined;
     lookback: () => readonly Readonly<Item<T>>[];
     break: () => void;
+    indicators: () => IndTup;
 };
 
-export type Stage<T, G = any> = {
-    evaluator: StageEvaluator<T, G>;
+export type Stage<T, IndTup, G = any> = {
+    evaluator: StageEvaluator<T, IndTup, G>;
     breakCounter?: number;
 };
 
-export type PatternDescriptor<T, G = any> = {
-    stages: Stage<T, G>[];
-    initialStateData?: G;
-    lookbackBufferSize: number;
-};
-
-type Funcs = [() => number, () => string, () => bigint];
-
-type GenericFunction = (...args: any[]) => any;
-type ArrayReturnTypes<Fns extends GenericFunction[]> = Fns extends [
+type AnyFn = (...args: any[]) => any;
+type ArrayReturnTypes<Fns extends AnyFn[]> = Fns extends [
     infer First,
     ...infer Rest
 ]
     ? [
-          ReturnType<First extends GenericFunction ? First : () => never>,
-          ...ArrayReturnTypes<Rest extends GenericFunction[] ? Rest : []>
+          ReturnType<First extends AnyFn ? First : () => never>,
+          ...ArrayReturnTypes<Rest extends AnyFn[] ? Rest : []>
       ]
     : [];
-type O = ArrayReturnTypes<Funcs>;
 
-// export type PatternDescriptor<T, Inds, G = any> = {
-//     stages: Stage<T, G, ArrayReturnTypes<Inds>>[];
-//     indicators: Inds;
-//     initialStateData?: G;
-//     lookbackBufferSize: number;
-// };
+export type PatternDescriptor<
+    T,
+    Inds = [],
+    G = any
+> = Inds extends GlobalIndicatorFn<T, infer IT>[]
+    ? {
+          indicators: Inds;
+          stages: Stage<T, ArrayReturnTypes<Inds>, G>[];
+          initialStateData?: G;
+          lookbackBufferSize: number;
+      }
+    : never;
 
-export type GlobalIndicator<T, IndT> = (
+export type GlobalIndicatorFn<T, IndT> = (
     item: Item<T>,
     lookback: readonly Readonly<Item<T>>[]
 ) => IndT;
+
+export type NamedGlobalIndicators<T> = {
+    [key: string]: GlobalIndicatorFn<T, any>;
+};
+
+const ngi: NamedGlobalIndicators<number> = {
+    rsi: (item, lookback) => 8,
+    name: (item, lookback) => 'luis'
+};
+
+type Remap<T> = {
+    [Key in keyof T]: ReturnType<T[Key]>;
+};
 
 export enum Change {
     NONE,
@@ -84,14 +95,18 @@ export type StageEventReport<T, G = any> = Pick<
     'id' | 'data' | 'backtrace'
 >;
 
-export class PatternSeeker<T, G> extends EventEmitter {
+export class PatternSeeker<
+    T,
+    IndFns extends AnyFn[],
+    G = any
+> extends EventEmitter {
     private states: ExecutionState<T, G>[] = [];
-    private pattern: PatternDescriptor<T, G>;
+    private pattern: PatternDescriptor<T, IndFns, G>;
     private curIndex = 0;
 
     private lookbackBuffer: Item<T>[] = [];
 
-    constructor(pattern: PatternDescriptor<T, G>) {
+    constructor(pattern: PatternDescriptor<T, IndFns, G>) {
         super();
         if (pattern.lookbackBufferSize < 0)
             throw new Error('lookbackBuffer should be > 0');
@@ -110,14 +125,17 @@ export class PatternSeeker<T, G> extends EventEmitter {
     }
 
     private generateActions(
+        element: Item<T>,
         execState: ExecutionState<T, G>
-    ): StageActions<T, G> {
+    ): StageActions<T, ArrayReturnTypes<IndFns>, G> {
         return {
             progress: () => void (execState.nextMove = Change.PROGRESS),
             set: (mutator) => (execState.data = mutator(execState.data)),
             get: () => execState.data,
             lookback: () => this.lookbackBuffer,
-            break: () => void (execState.nextMove = Change.BREAK)
+            break: () => void (execState.nextMove = Change.BREAK),
+            indicators: () =>
+                this.computeIndicators(element) as ArrayReturnTypes<IndFns>
         };
     }
 
@@ -178,6 +196,12 @@ export class PatternSeeker<T, G> extends EventEmitter {
             return true;
         });
     };
+
+    private computeIndicators(item: Item<T>) {
+        return this.pattern.indicators.map((indf) =>
+            indf(item, this.lookbackBuffer)
+        );
+    }
 
     private processKeptStates = (states: ExecutionState<T, G>[]) => {
         return states.map((execState) => {
@@ -241,8 +265,8 @@ export class PatternSeeker<T, G> extends EventEmitter {
         this.states = this.states.map((st) => this.resetNextChange(st));
         this.states.forEach((execState) => {
             const stage = this.pattern.stages[execState.currentStage];
-            const actions = this.generateActions(execState);
             const item: Item<T> = { index: this.curIndex, value: element };
+            const actions = this.generateActions(item, execState);
             stage.evaluator(item, actions);
         });
         // do not move next line around
