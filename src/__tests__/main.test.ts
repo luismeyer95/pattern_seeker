@@ -66,9 +66,9 @@ describe('test', () => {
         ));
 
         dataset.forEach((el) => patternSeek.process(el));
-        const calls = emit.mock.calls
-            // .slice(0, -1)
-            .filter((call) => call[0] === '1:complete');
+        const calls = emit.mock.calls.filter(
+            (call) => call[0] === '1:complete'
+        );
         expect(calls.length).toEqual(2);
         expect(calls[0][1].id).not.toEqual(calls[1][1].id);
     });
