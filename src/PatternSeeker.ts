@@ -25,11 +25,42 @@ export type Stage<T, G = any> = {
     breakCounter?: number;
 };
 
-export type PatternDescriptor<T, G = any> = {
+// export type PatternDescriptor<T, G = any> = {
+//     stages: Stage<T, G>[];
+//     initialStateData?: G;
+//     lookbackBufferSize: number;
+// };
+type Flatten<T> = T extends Array<infer UT> ? UT : never;
+type TupleReturns<GIArr> = GIArr extends Array<
+    GlobalIndicator<infer T, infer I>
+>
+    ? I
+    : never;
+
+type Res = TupleReturns<
+    [GlobalIndicator<number, string>, GlobalIndicator<number, number>]
+>;
+
+type Funcs = [() => number, () => string, () => bigint];
+type FuncResults = [number, string, bigint];
+
+type FuncResultsType<T extends Array<(...args: any[]) => any>> = {
+    [Key in keyof T]: ReturnType<T[Key]>;
+};
+
+type FuncResults = [number, string, bigint];
+
+export type PatternDescriptor<T, Inds, G = any> = {
     stages: Stage<T, G>[];
+    indicators: Inds;
     initialStateData?: G;
     lookbackBufferSize: number;
 };
+
+export type GlobalIndicator<T, IndT> = (
+    item: Item<T>,
+    lookback: readonly Readonly<Item<T>>[]
+) => IndT;
 
 export enum Change {
     NONE,

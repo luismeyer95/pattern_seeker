@@ -6,6 +6,19 @@ import {
 } from 'src/PatternSeeker';
 import { StageEventReport } from 'src/PatternSeeker';
 
+import csv from 'neat-csv';
+import fs from 'fs';
+import path from 'path';
+
+import { ma } from 'moving-averages';
+
+type Candle = {
+    open: number;
+    close: number;
+    high: number;
+    low: number;
+};
+
 describe('test', () => {
     const equals = (x: number) => basicEvaluator((el: number) => el === x);
     const isIncr = basicEvaluator(
@@ -67,9 +80,32 @@ describe('test', () => {
 
         dataset.forEach((el) => patternSeek.process(el));
         const calls = emit.mock.calls.filter(
-            (call) => call[0] === '1:complete'
+            ([eventString]) => eventString === '1:complete'
         );
         expect(calls.length).toEqual(2);
         expect(calls[0][1].id).not.toEqual(calls[1][1].id);
+    });
+
+    test('advanced strategy', async () => {
+        // Strategy
+        // 1. close price > 20MA > 50MA (=trend)
+        // * record the swing high from now on
+        // 2. 20MA > close price > 50MA + break if 50MA is crossed by close price
+        // 3. close price > previous swing high => entry
+
+        // const csv = 'type,part\nunicorn,horn\nrainbow,pink';
+        const datapath = path.resolve(__dirname, './btcusdt_minute.csv');
+        const rawdata = fs.readFileSync(datapath, {
+            encoding: 'utf8'
+        });
+        const dataset = (await csv(rawdata)).map((candle: any) => {
+            const { open, high, low, close } = candle;
+            return { open, high, low, close };
+        });
+
+        const patternSeek = new PatternSeeker<Candle>({
+            stages: [{ evaluator: ({ value: candle }, actions) => {} }],
+            lookbackBufferSize: 10
+        });
     });
 });

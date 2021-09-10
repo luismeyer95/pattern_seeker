@@ -31,6 +31,8 @@
     },
     "dependencies": {
         "@types/ramda": "^0.27.44",
+        "moving-averages": "^4.0.6",
+        "neat-csv": "^6.0.1",
         "pipe-ts": "^0.0.9",
         "short-uuid": "^4.2.0"
     }
