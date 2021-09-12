@@ -1,72 +1,56 @@
 import { EventEmitter } from 'events';
 import { pipeWith } from 'pipe-ts';
 import * as shortId from 'short-uuid';
+import cloneDeep from 'lodash/cloneDeep';
+import { DeepReadonly } from 'ts-essentials';
 
 export type Item<T> = {
     index: number;
     value: T;
 };
 
-export type StageEvaluator<T, IndTup, G = any> = (
-    element: Item<T>,
-    actions: StageActions<T, IndTup, G>
+export type StageEvaluator<T, G = any> = (
+    element: DeepReadonly<Item<T>>,
+    actions: StageActions<T, G>
 ) => unknown;
 
-export type StageActions<T, IndTup, G = any> = {
+export type StageActions<T, G = any> = {
     progress: () => void;
-    set: (mutator: (old?: G) => G | undefined) => void;
-    get: () => G | undefined;
-    lookback: () => readonly Readonly<Item<T>>[];
+    set: (mutator: (old: G) => G) => void;
+    get: () => G;
+    lookback: () => DeepReadonly<Item<T>[]>;
     break: () => void;
-    indicators: () => IndTup;
 };
 
-export type Stage<T, IndTup, G = any> = {
-    evaluator: StageEvaluator<T, IndTup, G>;
+export type Stage<T, G = any> = {
+    evaluator: StageEvaluator<T, G>;
     breakCounter?: number;
 };
 
-type AnyFn = (...args: any[]) => any;
-type ArrayReturnTypes<Fns extends AnyFn[]> = Fns extends [
-    infer First,
-    ...infer Rest
-]
-    ? [
-          ReturnType<First extends AnyFn ? First : () => never>,
-          ...ArrayReturnTypes<Rest extends AnyFn[] ? Rest : []>
-      ]
-    : [];
-
-export type PatternDescriptor<
-    T,
-    Inds = [],
-    G = any
-> = Inds extends GlobalIndicatorFn<T, infer IT>[]
-    ? {
-          indicators: Inds;
-          stages: Stage<T, ArrayReturnTypes<Inds>, G>[];
-          initialStateData?: G;
-          lookbackBufferSize: number;
-      }
-    : never;
-
-export type GlobalIndicatorFn<T, IndT> = (
-    item: Item<T>,
-    lookback: readonly Readonly<Item<T>>[]
-) => IndT;
-
-export type NamedGlobalIndicators<T> = {
-    [key: string]: GlobalIndicatorFn<T, any>;
+export type PatternDescriptor<T, G> = {
+    stages: Stage<T, G>[];
+    initialStateData: G;
+    lookbackBufferSize?: number;
+    enableParallelStates?: boolean;
 };
 
-const ngi: NamedGlobalIndicators<number> = {
-    rsi: (item, lookback) => 8,
-    name: (item, lookback) => 'luis'
-};
+// export type GlobalIndicatorFn<T, IndT> = (
+//     item: Item<T>,
+//     lookback: readonly Readonly<Item<T>>[]
+// ) => IndT;
 
-type Remap<T> = {
-    [Key in keyof T]: ReturnType<T[Key]>;
-};
+// export type NamedGlobalIndicators<T> = {
+//     [key: string]: GlobalIndicatorFn<T, any>;
+// };
+
+// type ReturnTypeIfFn<T> = T extends AnyFn ? ReturnType<T> : T;
+
+// export type IndicatorLookbacks<NGI extends NamedGlobalIndicators<any>> = {
+//     [Key in keyof NGI as `${string & Key}Lookback`]: ReturnTypeIfFn<NGI[Key]>[];
+// };
+
+// type T<U> = U extends PatternDescriptor<infer T1, infer T2> ? T1 : never;
+// type G<T> = T extends PatternDescriptor<infer T1, infer T2> ? T2 : never;
 
 export enum Change {
     NONE,
@@ -80,7 +64,7 @@ export type StageCompletion<T> = Item<T> & {
 
 export type ExecutionState<T, G = any> = {
     id: string;
-    data?: G;
+    data: G;
     nextMove: Change;
     currentStage: number;
     breakCounter: number;
@@ -96,19 +80,24 @@ export type StageEventReport<T, G = any> = Pick<
 >;
 
 export class PatternSeeker<
-    T,
-    IndFns extends AnyFn[],
-    G = any
+    PDT extends PatternDescriptor<T, G>,
+    T = PDT extends PatternDescriptor<infer T1, infer T2> ? T1 : never,
+    G = PDT extends PatternDescriptor<infer T1, infer T2> ? T2 : never
 > extends EventEmitter {
     private states: ExecutionState<T, G>[] = [];
-    private pattern: PatternDescriptor<T, IndFns, G>;
+    private pattern: PDT;
     private curIndex = 0;
 
-    private lookbackBuffer: Item<T>[] = [];
+    private bufferSize: number;
+    private enableParallelStates: boolean;
 
-    constructor(pattern: PatternDescriptor<T, IndFns, G>) {
+    private lookbackBuffer: DeepReadonly<Item<T>>[] = [];
+
+    constructor(pattern: PDT) {
         super();
-        if (pattern.lookbackBufferSize < 0)
+        this.bufferSize = pattern.lookbackBufferSize ?? 30;
+        this.enableParallelStates = !!pattern.enableParallelStates;
+        if (this.bufferSize < 0)
             throw new Error('lookbackBuffer should be > 0');
         this.pattern = pattern;
     }
@@ -125,23 +114,20 @@ export class PatternSeeker<
     }
 
     private generateActions(
-        element: Item<T>,
         execState: ExecutionState<T, G>
-    ): StageActions<T, ArrayReturnTypes<IndFns>, G> {
+    ): StageActions<T, G> {
         return {
             progress: () => void (execState.nextMove = Change.PROGRESS),
             set: (mutator) => (execState.data = mutator(execState.data)),
             get: () => execState.data,
             lookback: () => this.lookbackBuffer,
-            break: () => void (execState.nextMove = Change.BREAK),
-            indicators: () =>
-                this.computeIndicators(element) as ArrayReturnTypes<IndFns>
+            break: () => void (execState.nextMove = Change.BREAK)
         };
     }
 
-    private updateLookback(element: T) {
+    private updateLookback(element: DeepReadonly<T>) {
         this.lookbackBuffer.push({ index: this.curIndex, value: element });
-        if (this.lookbackBuffer.length > this.pattern.lookbackBufferSize)
+        if (this.lookbackBuffer.length > this.bufferSize)
             this.lookbackBuffer.shift();
     }
 
@@ -165,7 +151,7 @@ export class PatternSeeker<
         return {
             id,
             data,
-            backtrace: [...backtrace]
+            backtrace: cloneDeep(backtrace)
         };
     }
 
@@ -197,12 +183,6 @@ export class PatternSeeker<
         });
     };
 
-    private computeIndicators(item: Item<T>) {
-        return this.pattern.indicators.map((indf) =>
-            indf(item, this.lookbackBuffer)
-        );
-    }
-
     private processKeptStates = (states: ExecutionState<T, G>[]) => {
         return states.map((execState) => {
             if (execState.nextMove === Change.PROGRESS)
@@ -210,10 +190,6 @@ export class PatternSeeker<
             return this.stagnateState(execState);
         });
     };
-
-    private resetNextChange(state: ExecutionState<T, G>) {
-        return { ...state, nextMove: Change.NONE };
-    }
 
     private progressState(
         execState: ExecutionState<T, G>
@@ -228,17 +204,6 @@ export class PatternSeeker<
         return execState;
     }
 
-    private generateStageCompletion(
-        execState: ExecutionState<T, G>
-    ): StageCompletion<T> {
-        const lastItem = this.lookbackBuffer[this.lookbackBuffer.length - 1];
-        const backtraceElement: StageCompletion<T> = {
-            stage: execState.currentStage,
-            ...lastItem
-        };
-        return backtraceElement;
-    }
-
     private stagnateState(
         execState: ExecutionState<T, G>
     ): ExecutionState<T, G> {
@@ -246,6 +211,18 @@ export class PatternSeeker<
         execState.breakCounter = breakCounter == -1 ? -1 : breakCounter - 1;
         execState.nextMove = Change.NONE;
         return execState;
+    }
+
+    private generateStageCompletion(
+        execState: ExecutionState<T, G>
+    ): StageCompletion<T> {
+        const lastItem = this.lookbackBuffer[this.lookbackBuffer.length - 1];
+        const backtraceElement: StageCompletion<T> = {
+            stage: execState.currentStage,
+            index: lastItem.index,
+            value: cloneDeep(lastItem.value) as T
+        };
+        return backtraceElement;
     }
 
     private processStates(
@@ -259,20 +236,32 @@ export class PatternSeeker<
         );
     }
 
+    private respawnState() {
+        if (this.enableParallelStates) {
+            if (!this.states.find((st) => st.currentStage === 0))
+                this.states.push(this.startingState());
+        } else {
+            if (!this.states.length) this.states.push(this.startingState());
+        }
+    }
+
     process(element: T): void {
-        if (!this.states.find((st) => st.currentStage === 0))
-            this.states.push(this.startingState());
+        // // do not move next line around
+        const roEl = cloneDeep(element) as DeepReadonly<T>;
+        this.updateLookback(roEl);
+        this.respawnState();
         this.states = this.states.map((st) => this.resetNextChange(st));
         this.states.forEach((execState) => {
             const stage = this.pattern.stages[execState.currentStage];
-            const item: Item<T> = { index: this.curIndex, value: element };
-            const actions = this.generateActions(item, execState);
-            stage.evaluator(item, actions);
+            const actions = this.generateActions(execState);
+            stage.evaluator({ index: this.curIndex, value: roEl }, actions);
         });
-        // do not move next line around
-        this.updateLookback(element);
         this.states = this.processStates(this.states);
         this.curIndex++;
+    }
+
+    private resetNextChange(state: ExecutionState<T, G>) {
+        return { ...state, nextMove: Change.NONE };
     }
 
     on(event: StageEvents, fn: (report: StageEventReport<T, G>) => any): this {
@@ -285,11 +274,14 @@ export class PatternSeeker<
 }
 
 export const basicEvaluator = <T, G = any>(
-    pred: (el: T, i: number, previous?: T) => boolean
+    pred: (
+        el: DeepReadonly<T>,
+        i: number,
+        previous?: DeepReadonly<T>
+    ) => boolean
 ): StageEvaluator<T, G> => {
-    return ({ index, value }, { progress, lookback }) => {
-        const buffer = lookback();
-        const prev = buffer[buffer.length - 1];
-        pred(value, index, prev?.value) && progress();
+    return ({ index }, { progress, lookback }) => {
+        const [current, prev, ...rest] = lookback().slice().reverse();
+        pred(current.value, index, prev?.value) && progress();
     };
 };

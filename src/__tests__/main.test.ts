@@ -9,6 +9,7 @@ import { StageEventReport } from 'src/PatternSeeker';
 import csv from 'neat-csv';
 import fs from 'fs';
 import path from 'path';
+import { DeepReadonly } from 'ts-essentials';
 
 import { ma } from 'moving-averages';
 
@@ -17,6 +18,8 @@ type Candle = {
     close: number;
     high: number;
     low: number;
+    ma20?: number;
+    ma50?: number;
 };
 
 describe('test', () => {
@@ -35,7 +38,8 @@ describe('test', () => {
                 { evaluator: isIncr, breakCounter: 3 },
                 { evaluator: isIncr, breakCounter: 3 }
             ],
-            lookbackBufferSize: 10
+            lookbackBufferSize: 10,
+            initialStateData: null
         });
         const dataset = [5, 6, 10, 11, 12, 3, 4, 5];
         const emit = (patternSeek.emit = jest.fn(
@@ -71,7 +75,8 @@ describe('test', () => {
                 { evaluator: equals(10) },
                 { evaluator: isIncr, breakCounter: 3 }
             ],
-            lookbackBufferSize: 10
+            lookbackBufferSize: 10,
+            initialStateData: null
         });
         const dataset = [10, 11, 10, 11];
         const emit = (patternSeek.emit = jest.fn(
@@ -87,13 +92,6 @@ describe('test', () => {
     });
 
     test('advanced strategy', async () => {
-        // Strategy
-        // 1. close price > 20MA > 50MA (=trend)
-        // * record the swing high from now on
-        // 2. 20MA > close price > 50MA + break if 50MA is crossed by close price
-        // 3. close price > previous swing high => entry
-
-        // const csv = 'type,part\nunicorn,horn\nrainbow,pink';
         const datapath = path.resolve(__dirname, './btcusdt_minute.csv');
         const rawdata = fs.readFileSync(datapath, {
             encoding: 'utf8'
@@ -103,9 +101,73 @@ describe('test', () => {
             return { open, high, low, close };
         });
 
-        const patternSeek = new PatternSeeker<Candle>({
-            stages: [{ evaluator: ({ value: candle }, actions) => {} }],
-            lookbackBufferSize: 10
-        });
+        const computeMA = (period: number) => {
+            const lookback: number[] = [];
+            return (item: number) => {
+                lookback.push(item);
+                if (lookback.length === period) {
+                    const ttl = lookback.reduce((acc, el) => acc + el, 0);
+                    lookback.shift();
+                    return ttl / period;
+                }
+            };
+        };
+
+        // Strategy
+        // 1. close price > 20MA > 50MA (=trend)
+        // * record the swing high from now on
+        // 2. 20MA > close price > 50MA + break if 50MA is crossed by close price
+        // 3. close price > previous swing high => entry
+        const opts: PatternDescriptor<Candle, { swingHigh: number }> = {
+            lookbackBufferSize: 50,
+            initialStateData: { swingHigh: 0 },
+            stages: [
+                {
+                    evaluator: (
+                        { value: { close, ma20, ma50 } },
+                        { progress }
+                    ) => {
+                        if (!ma20 || !ma50) return;
+                        if (close > ma20 && ma20 > ma50) {
+                            progress();
+                        }
+                    }
+                },
+                {
+                    evaluator: ({ value: { close, ma20, ma50 } }, actions) => {
+                        actions.set(({ swingHigh }) => ({
+                            swingHigh: close > swingHigh ? close : swingHigh
+                        }));
+                        if (ma20! > close && close > ma50!) actions.progress();
+                        if (close < ma50!) actions.break();
+                    }
+                },
+                {
+                    evaluator: ({ value: { close } }, actions) => {
+                        const { swingHigh } = actions.get();
+                        if (close > swingHigh) actions.progress();
+                    }
+                }
+            ]
+        };
+        const patternSeek = new PatternSeeker(opts);
+
+        const emit = (patternSeek.emit = jest.fn(
+            patternSeek.emit.bind(patternSeek)
+        ));
+
+        const [get20MA, get50MA] = [20, 50].map(computeMA);
+        for (const candle of dataset) {
+            // patternSeek.process({
+            //     ...candle,
+            //     ma20: get20MA(candle.close),
+            //     ma50: get50MA(candle.close)
+            // });
+            const ma20 = get20MA(candle.close);
+            console.log(candle.close, ' | ', ma20);
+        }
+
+        const calls = emit.mock.calls.slice();
+        console.log(calls);
     });
 });
